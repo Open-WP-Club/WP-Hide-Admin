@@ -2,7 +2,7 @@
 /*
 Plugin Name: WP Hide Admin
 Description: Hides the WordPress admin area and provides custom login URL.
-Version: 1.0
+Version: 1.2
 Author: Your Name
 */
 
@@ -19,9 +19,10 @@ class WP_Hide_Admin
   {
     add_action('admin_menu', array($this, 'add_plugin_page'));
     add_action('admin_init', array($this, 'page_init'));
-    add_action('plugins_loaded', array($this, 'hide_admin'));
+    add_action('init', array($this, 'hide_admin'));
     add_action('wp_loaded', array($this, 'custom_login_url'));
     add_action('admin_post_export_ip_log', array($this, 'export_ip_log'));
+    add_action('admin_post_clear_ip_log', array($this, 'clear_ip_log'));
   }
 
   public function add_plugin_page()
@@ -48,12 +49,18 @@ class WP_Hide_Admin
         submit_button();
         ?>
       </form>
-      <h2>IP Log</h2>
-      <?php $this->display_ip_log(); ?>
-      <form method="post" action="<?php echo admin_url('admin-post.php'); ?>">
-        <input type="hidden" name="action" value="export_ip_log">
-        <?php submit_button('Export IP Log', 'secondary'); ?>
-      </form>
+      <?php if (isset($this->options['enable_ip_log']) && $this->options['enable_ip_log']): ?>
+        <h2>IP Log</h2>
+        <?php $this->display_ip_log(); ?>
+        <form method="post" action="<?php echo admin_url('admin-post.php'); ?>">
+          <input type="hidden" name="action" value="export_ip_log">
+          <?php submit_button('Export IP Log', 'secondary'); ?>
+        </form>
+        <form method="post" action="<?php echo admin_url('admin-post.php'); ?>">
+          <input type="hidden" name="action" value="clear_ip_log">
+          <?php submit_button('Clear IP Log', 'secondary'); ?>
+        </form>
+      <?php endif; ?>
     </div>
 <?php
   }
@@ -88,6 +95,14 @@ class WP_Hide_Admin
       'wp-hide-admin-setting-admin',
       'wp_hide_admin_setting_section'
     );
+
+    add_settings_field(
+      'enable_ip_log',
+      'Enable IP Logging',
+      array($this, 'enable_ip_log_callback'),
+      'wp-hide-admin-setting-admin',
+      'wp_hide_admin_setting_section'
+    );
   }
 
   public function sanitize($input)
@@ -97,6 +112,7 @@ class WP_Hide_Admin
       $new_input['login_url'] = sanitize_text_field($input['login_url']);
     if (isset($input['redirect_url']))
       $new_input['redirect_url'] = sanitize_text_field($input['redirect_url']);
+    $new_input['enable_ip_log'] = isset($input['enable_ip_log']) ? 1 : 0;
     return $new_input;
   }
 
@@ -121,22 +137,41 @@ class WP_Hide_Admin
     );
   }
 
+  public function enable_ip_log_callback()
+  {
+    printf(
+      '<input type="checkbox" id="enable_ip_log" name="wp_hide_admin_options[enable_ip_log]" value="1" %s />',
+      (isset($this->options['enable_ip_log']) && $this->options['enable_ip_log']) ? 'checked' : ''
+    );
+  }
+
   public function hide_admin()
   {
     $this->options = get_option('wp_hide_admin_options');
+
+    // Don't block access for logged-in administrators
+    if (is_user_logged_in() && current_user_can('manage_options')) {
+      return;
+    }
+
     if (isset($this->options['login_url']) && !empty($this->options['login_url'])) {
-      add_action('init', array($this, 'block_wp_admin'));
+      $this->block_wp_admin();
     }
   }
 
   public function block_wp_admin()
   {
-    if (!is_user_logged_in() && $GLOBALS['pagenow'] === 'wp-login.php') {
+    $current_url = $_SERVER['REQUEST_URI'];
+
+    // Block access to wp-login.php and wp-admin for non-admins
+    if ($GLOBALS['pagenow'] === 'wp-login.php' || strpos($current_url, '/wp-admin') === 0) {
       $redirect_url = home_url('/');
       if (isset($this->options['redirect_url']) && !empty($this->options['redirect_url'])) {
         $redirect_url = $this->options['redirect_url'];
       }
-      $this->log_attempt();
+      if (isset($this->options['enable_ip_log']) && $this->options['enable_ip_log']) {
+        $this->log_attempt();
+      }
       wp_redirect($redirect_url);
       exit;
     }
@@ -192,6 +227,13 @@ class WP_Hide_Admin
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename="wp_hide_admin_ip_log.csv"');
     echo $csv;
+    exit;
+  }
+
+  public function clear_ip_log()
+  {
+    delete_option('wp_hide_admin_ip_log');
+    wp_redirect(admin_url('options-general.php?page=wp-hide-admin'));
     exit;
   }
 }
