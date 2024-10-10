@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: WP Hide Admin
-Description: Hides the WordPress admin area and provides custom login URL.
-Version: 1.2
+Description: Hides the WordPress admin area and provides custom login URL
+Version: 1.2.0
 Author: Your Name
 */
 
@@ -17,12 +17,50 @@ class WP_Hide_Admin
 
   public function __construct()
   {
+    add_action('plugins_loaded', array($this, 'init'));
+    add_action('init', array($this, 'ensure_admin_access'), -1);
+  }
+
+  public function init()
+  {
+    $this->options = get_option('wp_hide_admin_options');
+
     add_action('admin_menu', array($this, 'add_plugin_page'));
     add_action('admin_init', array($this, 'page_init'));
-    add_action('init', array($this, 'hide_admin'));
-    add_action('wp_loaded', array($this, 'custom_login_url'));
+
+    // Only apply hiding functionality for non-admin users
+    if (!current_user_can('administrator')) {
+      add_action('init', array($this, 'hide_admin'), 0);
+      add_action('wp_loaded', array($this, 'custom_login_url'));
+    }
+
     add_action('admin_post_export_ip_log', array($this, 'export_ip_log'));
     add_action('admin_post_clear_ip_log', array($this, 'clear_ip_log'));
+  }
+
+  public function ensure_admin_access()
+  {
+    if (is_user_logged_in() && current_user_can('administrator')) {
+      // Only modify admin-related settings if we're in the admin area
+      if (is_admin()) {
+        // Ensure admin menu is visible
+        if (!defined('SHOW_ADMIN_BAR')) {
+          define('SHOW_ADMIN_BAR', true);
+        }
+
+        // Force admin menu to be shown
+        add_filter('show_admin_bar', '__return_true');
+
+        // Ensure admin access
+        if (!defined('WP_ADMIN')) {
+          define('WP_ADMIN', true);
+        }
+      }
+
+      // Remove any filters that might be interfering with admin access
+      remove_action('init', array($this, 'hide_admin'), 0);
+      remove_action('wp_loaded', array($this, 'custom_login_url'));
+    }
   }
 
   public function add_plugin_page()
@@ -147,14 +185,7 @@ class WP_Hide_Admin
 
   public function hide_admin()
   {
-    $this->options = get_option('wp_hide_admin_options');
-
-    // Don't block access for logged-in administrators
-    if (is_user_logged_in() && current_user_can('manage_options')) {
-      return;
-    }
-
-    if (isset($this->options['login_url']) && !empty($this->options['login_url'])) {
+    if (!is_admin() && isset($this->options['login_url']) && !empty($this->options['login_url'])) {
       $this->block_wp_admin();
     }
   }
@@ -163,8 +194,11 @@ class WP_Hide_Admin
   {
     $current_url = $_SERVER['REQUEST_URI'];
 
-    // Block access to wp-login.php and wp-admin for non-admins
     if ($GLOBALS['pagenow'] === 'wp-login.php' || strpos($current_url, '/wp-admin') === 0) {
+      if ($this->is_custom_login_page()) {
+        return;
+      }
+
       $redirect_url = home_url('/');
       if (isset($this->options['redirect_url']) && !empty($this->options['redirect_url'])) {
         $redirect_url = $this->options['redirect_url'];
@@ -177,12 +211,15 @@ class WP_Hide_Admin
     }
   }
 
+  private function is_custom_login_page()
+  {
+    return isset($this->options['login_url']) && $_SERVER['REQUEST_URI'] == '/' . $this->options['login_url'];
+  }
+
   public function custom_login_url()
   {
-    $this->options = get_option('wp_hide_admin_options');
     if (isset($this->options['login_url']) && !empty($this->options['login_url'])) {
-      $custom_login_url = home_url($this->options['login_url']);
-      if ($_SERVER['REQUEST_URI'] == '/' . $this->options['login_url']) {
+      if ($this->is_custom_login_page()) {
         require_once(ABSPATH . 'wp-login.php');
         exit;
       }
